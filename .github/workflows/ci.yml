@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    timeout-minutes: 10
+
+    # Tests are fully hermetic — no Ollama, no external network.
+    # Every LLM call is mocked; the optional @pytest.mark.llm test is skipped.
+    env:
+      CI: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Lint (ruff check)
+        run: python3 -m ruff check src tests scripts
+
+      - name: Format check (ruff format)
+        run: python3 -m ruff format --check src tests scripts
+
+      - name: Run tests
+        run: python3 -m pytest tests/ -q --tb=short -m "not llm"
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # gitleaks scans commit ranges (--log-opts --first-parent A^..B), which
+      # requires full history. Shallow checkout (default fetch-depth: 1) makes
+      # the scan fail with "stderr is not empty" even when no leaks existed.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan dependencies for known vulnerabilities (pip-audit)
+        run: |
+          python3 -m pip install pip-audit
+          # Audit the declared dev/CI tree (pytest, pytest-asyncio, ruff).
+          # The runtime package is stdlib-only, so the attack surface is
+          # limited to the dev toolchain.
+          python3 -m pip_audit -r requirements.txt
+
+      - name: Scan for leaked secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,11 @@
+# pcb-ai-agent — Python 3.11+ dev / CI dependencies
+#
+# The runtime package is stdlib-only (zero external deps).  This file
+# pins the toolchain for CI, the pre-push hook and pip-audit.
+#
+# PYSEC-2026-1845: pytest >= 9.0.3 + pytest-asyncio >= 1.4 are required
+# to avoid the ReDoS vulnerability pinned in those bounds.
+
+pytest>=9.0.3,<10.0
+pytest-asyncio>=1.4,<2.0
+ruff>=0.5,<1.0

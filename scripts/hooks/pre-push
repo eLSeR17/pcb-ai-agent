@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# pre-push hook — locally mirrors CI checks before allowing push.
+#
+# Closes the WSL gap: ruff does not enforce EXE001/EXE002 on WSL2, but the
+# GitHub Actions runner does.  This portable check replicates it on any OS.
+#
+# Install (once per clone):  git config core.hooksPath scripts/hooks
+# Runs implicitly on every `git push`.
+set -uo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+FAIL=0
+step() { printf '\033[1;36m[pre-push] %s\033[0m\n' "$1"; }
+fail() { printf '\033[1;31m[pre-push] %s\033[0m\n' "$1"; FAIL=1; }
+
+step "ruff check (same targets as CI)"
+if ! python3 -m ruff check src tests scripts; then
+  fail "ruff: lint errors — fix before pushing"
+fi
+
+step "ruff format --check (same targets as CI)"
+if ! python3 -m ruff format --check src tests scripts; then
+  fail "ruff format: unformatted files — run 'ruff format src tests scripts'"
+fi
+
+step "EXE001/EXE002 check (portable; ruff skips it on WSL)"
+if ! python3 - <<'HEREDOC_EXE'
+import os, pathlib, sys
+errs = []
+for base in ("src", "tests", "scripts"):
+    for p in pathlib.Path(base).rglob("*.py"):
+        s = os.stat(p)
+        exe = bool(s.st_mode & 0o111)
+        shebang = p.read_bytes()[:2] == b"#!"
+        if exe and not shebang:
+            errs.append(f"EXE002 {p} — executable without shebang (add #!/usr/bin/env python3 or chmod -x)")
+        if shebang and not exe:
+            errs.append(f"EXE001 {p} — shebang without executable bit (chmod +x)")
+for e in errs:
+    print(e)
+sys.exit(1 if errs else 0)
+HEREDOC_EXE
+then
+  fail "EXE: shebang/executable inconsistencies (see above)"
+fi
+
+step "pytest (excluding llm marker)"
+if ! python3 -m pytest tests -q -m "not llm"; then fail "pytest: failing tests"; fi
+
+step "pip-audit (declared dependency tree)"
+if command -v pip-audit >/dev/null 2>&1; then
+  if ! pip-audit -r requirements.txt; then fail "pip-audit: known vulnerabilities in declared deps"; fi
+else
+  printf '[pre-push] pip-audit not installed — skipping (CI covers it)\n'
+fi
+
+if [ "$FAIL" -eq 0 ]; then
+  step "✓ local checks passed (ruff + EXE + pytest + pip-audit) — push allowed"
+else
+  fail "Push BLOCKED — fix the errors above."
+  exit 1
+fi
+exit 0
