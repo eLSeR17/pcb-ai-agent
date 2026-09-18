@@ -79,6 +79,10 @@ netlist.py        Design models (Component, Net, Design).
   │                 │                UNCONNECTED_PIN, MISSING_VALUE,
   │                 │                MISSING_FOOTPRINT, NO_DRIVER,
   │                 │                LED_NO_LIMITER.
+  │                 │                v2 rules: E_SERIES_COMPLIANCE
+  │                 │                (E6/E12/E24/E96 preferred
+  │                 │                values), LED_SERIES_RESISTOR,
+  │                 │                CAP_DERATING.
   │                 │
   ├───────────────►  bom.py          Deterministic BOM: one row per
   │                 ▲                component, sorted by ref, plus

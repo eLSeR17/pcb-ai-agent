@@ -5,8 +5,9 @@ with grounded evidence.
 v2 rule tests (deterministic, netlist-only):
 
 - ``E_SERIES_COMPLIANCE``: resistor/capacitor values must be preferred
-  E12/E24 numbers (``non-e-series`` fixture: ``333`` and ``333pF`` flagged,
-  standard values silent).
+  E6/E12/E24/E96 numbers (``non-e-series`` fixture: ``333`` and ``333pF``
+  flagged, standard values silent; ``e96-values`` fixture: exact E96
+  members accepted).
 - ``LED_SERIES_RESISTOR``: an LED series resistor that is 0 ohm (short) or
   below ~22 ohm is flagged (``led-weak-limiter`` fixture); a proper 330 ohm
   limiter stays silent and ``LED_NO_LIMITER`` keeps owning the
@@ -14,6 +15,17 @@ v2 rule tests (deterministic, netlist-only):
 - ``CAP_DERATING``: an electrolytic capacitor with an explicit voltage
   rating on a numeric power rail must respect the 1.5x derating guideline
   (``cap-undervoltage`` fixture); cases without enough data are silent.
+
+v2-regression tests (triggered by a 1060-component board audit):
+
+- ``unannotated-refs``: KiCad ``R?`` placeholders must be omitted, not
+  crash the parser; the remaining design is a clean 0-finding board.
+- ``namespaced-refs`` / ``namespaced-simple-led``: hierarchical refs
+  (``motherboard/R18``, ``sheet1.LED2``) must behave like plain refs.
+- ``no-connect``: nets named ``unconnected-(...)`` are excluded from
+  ``FLOATING_NET``.
+- ``single-pin-parts``: mechanical/power symbols (``H*``, ``MH*``,
+  ``TP*``, ``FID*``, ``#PWR01``) are excluded from ``UNCONNECTED_PIN``.
 """
 
 from __future__ import annotations
@@ -33,6 +45,12 @@ MINIMAL_MCU = FIXTURES / "minimal-mcu.kicad_net"
 NON_E_SERIES = FIXTURES / "non-e-series.kicad_net"
 LED_WEAK_LIMITER = FIXTURES / "led-weak-limiter.kicad_net"
 CAP_UNDERVOLTAGE = FIXTURES / "cap-undervoltage.kicad_net"
+UNANNOTATED_REFS = FIXTURES / "unannotated-refs.kicad_net"
+NAMESPACED_REFS = FIXTURES / "namespaced-refs.kicad_net"
+NAMESPACED_SIMPLE_LED = FIXTURES / "namespaced-simple-led.kicad_net"
+NO_CONNECT = FIXTURES / "no-connect.kicad_net"
+SINGLE_PIN_PARTS = FIXTURES / "single-pin-parts.kicad_net"
+E96_VALUES = FIXTURES / "e96-values.kicad_net"
 
 SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}
 
@@ -415,3 +433,171 @@ class TestCapDerating:
         assert "CAP_DERATING" not in rules(audit_design(parse_netlist(SIMPLE_LED)))
         assert "CAP_DERATING" not in rules(audit_design(parse_netlist(MINIMAL_MCU)))
         assert "CAP_DERATING" not in rules(audit_design(parse_netlist(BAD_LED)))
+
+
+def _pairs(report) -> list[tuple[str, list[str]]]:
+    return [(finding.rule, finding.evidence) for finding in report.findings]
+
+
+class TestUnannotatedReferences:
+    """A board with Eeschema ``R?``/``U?`` placeholders audits clean."""
+
+    def test_zero_findings(self) -> None:
+        report = audit_design(parse_netlist(UNANNOTATED_REFS))
+        assert report.findings == []
+        assert report.summary["total"] == 0
+
+    def test_omitted_placeholder_components(self) -> None:
+        design = parse_netlist(UNANNOTATED_REFS)
+        assert set(design.components) == {"R1", "R2", "C1", "U1"}
+
+
+class TestNamespacedReferences:
+    """Hierarchical refs must be resolved, never matched by raw prefix."""
+
+    def test_exact_findings_on_namespaced_board(self) -> None:
+        report = audit_design(parse_netlist(NAMESPACED_REFS))
+        assert _pairs(report) == [
+            ("E_SERIES_COMPLIANCE", ["motherboard/R18=333"]),
+            ("LED_NO_LIMITER", ["sheet1.LED2", "LED2_A", "LED2_K"]),
+            ("NO_DRIVER", ["LED2_A", "MB-C3", "sheet1.LED2"]),
+            ("NO_DRIVER", ["LED2_K", "MB-C2", "sheet1.LED2"]),
+            ("NO_DRIVER", ["LED_A", "MB-R3", "motherboard/LED1"]),
+        ]
+
+    def test_led_with_limiter_through_namespace_stays_silent(self) -> None:
+        # motherboard/LED1 sits on LED_A together with MB-R3 (class R):
+        # the limiter is found through the namespaced class, and only
+        # sheet1.LED2 (no resistor) is flagged by LED_NO_LIMITER.
+        report = audit_design(parse_netlist(NAMESPACED_REFS))
+        leds = [f for f in report.findings if f.rule == "LED_NO_LIMITER"]
+        assert leds[0].evidence[0] == "sheet1.LED2"
+
+    def test_e_series_message_namespaced_and_e96(self) -> None:
+        report = audit_design(parse_netlist(NAMESPACED_REFS))
+        hit = next(f for f in report.findings if f.rule == "E_SERIES_COMPLIANCE")
+        assert "motherboard/R18" in hit.message
+        assert "E96" in hit.message
+
+    def test_namespaced_simple_led_mirror(self) -> None:
+        # Same topology as simple-led but with namespaced refs: the only
+        # difference must be the NO_DRIVER evidence names.
+        report = audit_design(parse_netlist(NAMESPACED_SIMPLE_LED))
+        assert _pairs(report) == [("NO_DRIVER", ["LED_A", "motherboard/LED1", "motherboard/R1"])]
+
+
+class TestRefHelpers:
+    """_ref_kind/_ref_class: the namespaced-reference resolution units."""
+
+    def test_ref_kind(self) -> None:
+        from pcbai.design.audit import _ref_kind
+
+        assert _ref_kind("R1") == "R"
+        assert _ref_kind("R18") == "R"
+        assert _ref_kind("LED1") == "LED"
+        assert _ref_kind("motherboard/R18") == "R"
+        assert _ref_kind("sheet1.U5") == "U"
+        assert _ref_kind("MB-R12") == "R"
+        assert _ref_kind("TP1") == "TP"
+        assert _ref_kind("FID1") == "FID"
+        assert _ref_kind("MH1") == "MH"
+        assert _ref_kind("H1") == "H"
+        assert _ref_kind("#PWR01") is None
+        assert _ref_kind("1R") is None
+
+    def test_ref_class(self) -> None:
+        from pcbai.design.audit import _ref_class
+
+        assert _ref_class("R1") == "R"
+        assert _ref_class("motherboard/R18") == "R"
+        assert _ref_class("LED1") == "L"
+        assert _ref_class("sheet1.LED2") == "L"
+        assert _ref_class("#PWR01") is None
+
+    def test_ref_kind_case_sensitive(self) -> None:
+        from pcbai.design.audit import _ref_kind
+
+        assert _ref_kind("led1") == "led"  # no case folding
+
+
+class TestNoConnectNets:
+    """KiCad ``unconnected-(...)`` nets are deliberate non-connections."""
+
+    def test_floating_excludes_unconnected_nets(self) -> None:
+        report = audit_design(parse_netlist(NO_CONNECT))
+        floating = [f.evidence for f in report.findings if f.rule == "FLOATING_NET"]
+        assert floating == [["DANGLING", "R2"]]
+
+    def test_unconnected_net_leaves_no_trace(self) -> None:
+        report = audit_design(parse_netlist(NO_CONNECT))
+        assert all("unconnected-(U1-Pad3)" not in f.evidence for f in report.findings)
+
+    def test_exact_findings(self) -> None:
+        report = audit_design(parse_netlist(NO_CONNECT))
+        assert _pairs(report) == [
+            ("FLOATING_NET", ["DANGLING", "R2"]),
+            ("NO_DRIVER", ["DANGLING", "R2"]),
+        ]
+
+
+class TestSinglePinParts:
+    """Mechanical/power symbols are legitimately single-connection."""
+
+    def test_unconnected_pin_only_real_part(self) -> None:
+        report = audit_design(parse_netlist(SINGLE_PIN_PARTS))
+        unconnected = [f.evidence for f in report.findings if f.rule == "UNCONNECTED_PIN"]
+        assert unconnected == [["R1", "1"]]
+
+    def test_floating_still_flags_single_wire_net(self) -> None:
+        report = audit_design(parse_netlist(SINGLE_PIN_PARTS))
+        floating = {f.evidence[0] for f in report.findings if f.rule == "FLOATING_NET"}
+        assert floating == {"H1_NET", "MH1_NET", "TP1_NET", "FID1_NET", "VCC", "R1_LOOSE"}
+
+    def test_exact_findings(self) -> None:
+        report = audit_design(parse_netlist(SINGLE_PIN_PARTS))
+        assert _pairs(report) == [
+            ("FLOATING_NET", ["FID1_NET", "FID1"]),
+            ("FLOATING_NET", ["H1_NET", "H1"]),
+            ("FLOATING_NET", ["MH1_NET", "MH1"]),
+            ("UNCONNECTED_PIN", ["R1", "1"]),
+            ("FLOATING_NET", ["R1_LOOSE", "R1"]),
+            ("FLOATING_NET", ["TP1_NET", "TP1"]),
+            ("FLOATING_NET", ["VCC", "#PWR01"]),
+            ("NO_DRIVER", ["R1_LOOSE", "R1"]),
+        ]
+
+
+class TestESeriesE96:
+    """E_SERIES_COMPLIANCE accepts exact E96 numbers, rejects near-misses."""
+
+    def test_exact_e96_hits(self) -> None:
+        report = audit_design(parse_netlist(E96_VALUES))
+        assert _pairs(report) == [
+            ("E_SERIES_COMPLIANCE", ["C3=333pF"]),
+            ("E_SERIES_COMPLIANCE", ["R6=333"]),
+        ]
+
+    def test_e96_standard_values_silent(self) -> None:
+        # 4.99k, 24.9k, 49.9k, 127k, 27.4, 10k, 1.15nF and 4.99uF are exact
+        # E96 members (0.0 % off); 333/333pF are 0.30 % off 3.32 -> flagged.
+        report = audit_design(parse_netlist(E96_VALUES))
+        assert report.summary["warnings"] == 2
+
+    def test_message_mentions_e96(self) -> None:
+        report = audit_design(parse_netlist(E96_VALUES))
+        assert all("E96" in f.message for f in report.findings)
+
+    def test_is_e_series_e96_membership(self) -> None:
+        from pcbai.design.audit import _is_e_series
+
+        assert _is_e_series(4990.0)
+        assert _is_e_series(24900.0)
+        assert _is_e_series(49900.0)
+        assert _is_e_series(127000.0)
+        assert _is_e_series(27.4)
+        assert _is_e_series(1.15e-9)
+        assert _is_e_series(4.99e-6)
+        assert not _is_e_series(333.0)
+        assert not _is_e_series(333e-12)
+        assert not _is_e_series(0.0)
+        assert not _is_e_series(-10.0)

@@ -22,6 +22,7 @@ from pcbai.kicad.netlist import (
 FIXTURES = Path(__file__).parent / "fixtures"
 NETLIST = FIXTURES / "simple-led.kicad_net"
 SCHEMATIC = FIXTURES / "simple-led.kicad_sch"
+UNANNOTATED = FIXTURES / "unannotated-refs.kicad_net"
 
 
 class TestNetlistParser:
@@ -210,3 +211,49 @@ class TestSchematicErrors:
         text = '(kicad_sch (version 20231120) (symbol (lib_id "Device:R")))'
         with pytest.raises(SchematicError, match="Reference"):
             parse_schematic(text)
+
+
+class TestUnannotatedReferences:
+    """Eeschema ``R?`` placeholders (never annotated) must not crash the
+    parser: they are omitted from the design because several parts share
+    the same placeholder ref and pin pairs are not unique."""
+
+    def test_unannotated_components_omitted(self) -> None:
+        design = parse_netlist(UNANNOTATED)
+        assert set(design.components) == {"R1", "R2", "C1", "U1"}
+        assert "R?" not in design.components
+        assert "U?" not in design.components
+
+    def test_unannotated_nodes_filtered_from_nets(self) -> None:
+        design = parse_netlist(UNANNOTATED)
+        for net in design.nets.values():
+            assert all(ref != "R?" and ref != "U?" for ref, _ in net.connections)
+
+    def test_real_connections_survive(self) -> None:
+        design = parse_netlist(UNANNOTATED)
+        assert design.nets["5V"].connections == [("U1", "14"), ("R2", "2")]
+        assert design.nets["GND"].connections == [("U1", "7"), ("R1", "2")]
+        assert design.nets["+3V3"].connections == [("U1", "4"), ("U1", "5")]
+
+    def test_duplicate_unannotated_refs_do_not_raise(self) -> None:
+        # Two (comp (ref "R?") ...) entries share the placeholder: the
+        # duplicate-reference error must never fire for them.
+        text = (
+            '(export (version "E")'
+            '  (components (comp (ref "R?")) (comp (ref "R?")))'
+            '  (nets (net (code 0) (name "N1") (node (ref "R?") (pin "1"))))'
+            ")"
+        )
+        design = parse_netlist(text)
+        assert design.components == {}
+        assert design.nets["N1"].connections == []
+
+    def test_is_unannotated_ref_helper(self) -> None:
+        from pcbai.kicad.netlist import _is_unannotated_ref
+
+        assert _is_unannotated_ref("R?")
+        assert _is_unannotated_ref("U?")
+        assert _is_unannotated_ref("motherboard/R?")
+        assert not _is_unannotated_ref("R1")
+        assert not _is_unannotated_ref("R?1")
+        assert not _is_unannotated_ref("")

@@ -10,11 +10,14 @@ the parsed netlist.
 Rule catalogue (v1):
 
 - ``FLOATING_NET``     warning — a net with a single connection (likely
-  left unterminated).
+  left unterminated). Explicit KiCad no-connect labels
+  (``unconnected-(...)``) are excluded: they are schematic intent.
 - ``UNCONNECTED_PIN``  warning — a component wired through exactly one
   pin (count heuristic: netlist pins are derived from nets, so a single
   wired pin on an otherwise multi-pin part means one or more pins are
-  open).
+  open). Single-pin mechanical parts (mounting holes ``H*``/``MH*``,
+  test points ``TP*``, fiducials ``FID*``) and power symbols
+  (``#PWR01``) are valid one-connection components and are excluded.
 - ``MISSING_VALUE``    warning — R/C/D/L/Q/U component with no value,
   except the power-symbol pattern (pin 1 on GND/VCC).
 - ``MISSING_FOOTPRINT`` error  — component without footprint (the board is
@@ -25,12 +28,19 @@ Rule catalogue (v1):
 - ``LED_NO_LIMITER``   warning — an LED whose nets contain no pin of a
   series resistor: unbounded current, part will be destroyed.
 
+References and namespaces: KiCad hierarchical sheets can prefix a
+reference (``motherboard/R18``, ``sheet1.U5``) and footprints/net names
+may contain ``-`` (``MB-R12``); every rule resolves the part kind through
+the last namespace segment (:func:`_ref_kind`) instead of reading
+``ref[0]``, so namespaced refs behave exactly like their plain
+counterparts.
+
 Rule catalogue (v2, deterministic netlist-only checks):
 
-- ``E_SERIES_COMPLIANCE`` warning — R/C value is not a preferred E12/E24
-  number (IEC 60063). A value like ``333`` (mantissa 3.33) instead of the
-  standard ``330`` is flagged; decade multiples and exact preferred
-  numbers pass (see :func:`_is_e_series`).
+- ``E_SERIES_COMPLIANCE`` warning — R/C value is not a preferred
+  E6/E12/E24/E96 number (IEC 60063). A value like ``333`` (mantissa
+  3.33) instead of the standard ``330`` is flagged; decade multiples and
+  exact preferred numbers pass (see :func:`_is_e_series`).
 - ``LED_SERIES_RESISTOR`` warning — an LED series resistor that is 0 ohm
   (a short) or below ~22 ohm (cannot limit the current for a 3.3-5 V
   supply) is flagged. ``LED_NO_LIMITER`` keeps owning the resistorless
@@ -76,9 +86,19 @@ POWER_NET_NAMES: frozenset[str] = frozenset({"5V", "VCC", "GND"})
 #: Reference prefixes that must always carry a value (MISSING_VALUE rule).
 VALUE_REQUIRED_PREFIXES: tuple[str, ...] = ("R", "C", "D", "L", "Q", "U")
 
+#: Reference kinds treated as valid single-connection parts (UNCONNECTED_PIN
+#: rule): ``H``/``MH`` mounting holes, ``TP`` test points and ``FID``
+#: fiducials. One wired pin is their normal operating point.
+SINGLE_PIN_PART_KINDS: frozenset[str] = frozenset({"H", "MH", "TP", "FID"})
+
+#: Net-name prefix of KiCad explicit no-connect labels, e.g.
+#: ``unconnected-(U1-Pad3)`` (FLOATING_NET rule).
+NO_CONNECT_NET_PREFIX: str = "unconnected-"
+
 #: E-series rows (IEC 60063) keyed by series name. E12 reuses the row
 #: maintained by :mod:`pcbai.design.sizing` so the project has a single
-#: source of truth; E6 is every other E12 step; E24 adds the fine 5 % steps.
+#: source of truth; E6 is every other E12 step; E24 adds the fine 5 %
+#: steps; E96 (1 % parts) is the full 96-mantissa grid.
 E_SERIES_ROWS: dict[str, tuple[float, ...]] = {
     "E6": tuple(E12_SERIES[::2]),
     "E12": E12_SERIES,
@@ -108,14 +128,114 @@ E_SERIES_ROWS: dict[str, tuple[float, ...]] = {
         8.2,
         9.1,
     ),
+    "E96": (
+        1.00,
+        1.02,
+        1.05,
+        1.07,
+        1.10,
+        1.13,
+        1.15,
+        1.18,
+        1.21,
+        1.24,
+        1.27,
+        1.30,
+        1.33,
+        1.37,
+        1.40,
+        1.43,
+        1.47,
+        1.50,
+        1.54,
+        1.58,
+        1.62,
+        1.65,
+        1.69,
+        1.74,
+        1.78,
+        1.82,
+        1.87,
+        1.91,
+        1.96,
+        2.00,
+        2.05,
+        2.10,
+        2.15,
+        2.21,
+        2.26,
+        2.32,
+        2.37,
+        2.43,
+        2.49,
+        2.55,
+        2.61,
+        2.67,
+        2.74,
+        2.80,
+        2.87,
+        2.94,
+        3.01,
+        3.09,
+        3.16,
+        3.24,
+        3.32,
+        3.40,
+        3.48,
+        3.57,
+        3.65,
+        3.74,
+        3.83,
+        3.92,
+        4.02,
+        4.12,
+        4.22,
+        4.32,
+        4.42,
+        4.53,
+        4.64,
+        4.75,
+        4.87,
+        4.99,
+        5.11,
+        5.23,
+        5.36,
+        5.49,
+        5.62,
+        5.76,
+        5.90,
+        6.04,
+        6.19,
+        6.34,
+        6.49,
+        6.65,
+        6.81,
+        6.98,
+        7.15,
+        7.32,
+        7.50,
+        7.68,
+        7.87,
+        8.06,
+        8.25,
+        8.45,
+        8.66,
+        8.87,
+        9.09,
+        9.31,
+        9.54,
+        9.76,
+    ),
 }
 
-#: Relative tolerance for :func:`_is_e_series`. 0.5 % accepts exact
+#: Relative tolerance for :func:`_is_e_series`. 0.25 % accepts exact
 #: preferred numbers (and the binary floating-point wobble around them)
-#: while rejecting non-preferred mantissas such as ``3.33`` (0.9 % off the
-#: E24 step 3.3). An intentionally unannotated E96/E192 1 % value is
-#: flagged: fine-tolerance parts are expected to state their tolerance.
-E_SERIES_MATCH_TOLERANCE: float = 0.005
+#: while rejecting non-preferred mantissas even next to the dense E96
+#: grid: ``333`` (3.33) sits 0.30 % off the E96 step 3.32 and ``2.5k``
+#: (2.5) sits 0.40 % off 2.49, so both are flagged. No two consecutive
+#: E96 steps are ever closer than ~0.75 %, so a non-standard value can
+#: never hide within 0.25 % of a step.
+E_SERIES_MATCH_TOLERANCE: float = 0.0025
 
 #: Resistor values below this are too weak to limit an LED current on a
 #: 3.3-5 V supply (LED_SERIES_RESISTOR rule).
@@ -150,6 +270,47 @@ _RAIL_SHORT_RE = re.compile(r"^(\d+)V(\d)$")
 _ELECTROLYTIC_SUFFIX_RE = re.compile(r"\d+(?:\.\d+)?\s*[muµμ]f?", re.IGNORECASE)
 
 _STRIP_TOLERANCE_RE = re.compile(r"\s*\d+(?:\.\d+)?%")
+
+#: Namespace separators of hierarchical references (``motherboard/R18``,
+#: ``sheet1.U5``, ``MB-R12``).
+_REF_NAMESPACE_SPLIT_RE = re.compile(r"[/.\-]")
+
+#: Leading alphabetic run of a reference kind (``R1`` -> ``"R"``).
+_REF_KIND_RE = re.compile(r"[A-Za-z]+")
+
+
+def _ref_kind(ref: str) -> str | None:
+    """Leading alphabetic token of the final namespace segment of a ref.
+
+    KiCad allows hierarchical/namespaced references, so rules must never
+    read ``ref[0]`` of the raw designator. The kind is the leading alpha
+    run of the segment after the last ``/``, ``.`` or ``-`` separator:
+    ``R1`` -> ``"R"``, ``LED1`` -> ``"LED"``, ``motherboard/R18`` ->
+    ``"R"``, ``sheet1.U5`` -> ``"U"``, ``MB-R12`` -> ``"R"``, ``TP1`` ->
+    ``"TP"``. References with no alphabetic head (e.g. the ``#PWR01``
+    power symbol) return ``None`` — callers treat unknown kinds
+    conservatively. No case folding: prefix matching stays
+    case-sensitive, exactly as it was on plain refs.
+    """
+    if not ref:
+        return None
+    token = _REF_NAMESPACE_SPLIT_RE.split(ref)[-1]
+    match = _REF_KIND_RE.match(token)
+    return match.group(0) if match is not None else None
+
+
+def _ref_class(ref: str) -> str | None:
+    """First-letter class of a reference kind (``LED1`` -> ``"L"``).
+
+    The historical rules used ``ref[0]`` (``R`` resistors, ``C``
+    capacitors, ``L`` LEDs/inductors, ``U``/``J``/``Q`` drivers);
+    ``_ref_class`` keeps that single-letter semantics while resolving the
+    kind through :func:`_ref_kind`, so namespaced refs behave exactly
+    like their plain counterparts (``motherboard/R18`` -> ``"R"``).
+    Returns ``None`` when the ref has no alphabetic kind.
+    """
+    kind = _ref_kind(ref)
+    return kind[0] if kind else None
 
 
 @dataclass(frozen=True)
@@ -211,11 +372,21 @@ def audit_design(design: Design, source: str = "netlist") -> AuditReport:
 
 
 def _floating_net(design: Design, source: str) -> list[Finding]:
-    """``FLOATING_NET``: a net with exactly one connection (warning)."""
+    """``FLOATING_NET``: a net with exactly one connection (warning).
+
+    KiCad no-connect labels export as ``unconnected-(...)`` nets with a
+    single connection; they are explicit schematic intent, so they are
+    excluded (prefix :data:`NO_CONNECT_NET_PREFIX`). A net that is
+    legitimately mono-connected — a mounting hole, fiducial, test point
+    or lone power symbol — is still reported: the warning asks to confirm
+    the intent.
+    """
     findings: list[Finding] = []
     for net in sorted(design.nets.values(), key=lambda item: item.name):
         if len(net.connections) != 1:
             continue
+        if net.name.lower().startswith(NO_CONNECT_NET_PREFIX):
+            continue  # explicit KiCad no-connect: schematic intent
         ref, pin = net.connections[0]
         findings.append(
             Finding(
@@ -232,15 +403,30 @@ def _floating_net(design: Design, source: str) -> list[Finding]:
     return findings
 
 
+def _is_single_pin_part(ref: str) -> bool:
+    """True for refs of valid single-connection parts (UNCONNECTED_PIN).
+
+    Covers KiCad power symbols (``#PWR01``) and the mechanical
+    single-pin families ``H``/``MH`` (mounting holes), ``TP`` (test
+    points) and ``FID`` (fiducials) — see :data:`SINGLE_PIN_PART_KINDS`.
+    The ref kind is resolved through :func:`_ref_kind`, so namespaced
+    refs (``sheet1.TP3``) are handled too.
+    """
+    return ref.startswith("#") or _ref_kind(ref) in SINGLE_PIN_PART_KINDS
+
+
 def _unconnected_pin(design: Design, source: str) -> list[Finding]:
     """``UNCONNECTED_PIN``: component wired through exactly one pin.
 
     Count heuristic (v1): in a netlist, ``component.pins`` is derived from
     the nets, so the number of wired pins is the only pin information
     available. A part wired through exactly one pin means one or more of
-    its other pins are not connected to anything. Designs without
-    pin-level connectivity (schematic-derived, all pin nets ``None``) are
-    skipped because the parser cannot resolve pin connectivity there.
+    its other pins are not connected to anything. Single-pin mechanical
+    parts (mounting holes, test points, fiducials) and KiCad power
+    symbols are valid one-connection components and are excluded
+    (:func:`_is_single_pin_part`). Designs without pin-level connectivity
+    (schematic-derived, all pin nets ``None``) are skipped because the
+    parser cannot resolve pin connectivity there.
     """
     findings: list[Finding] = []
     for ref, component in sorted(design.components.items()):
@@ -248,6 +434,8 @@ def _unconnected_pin(design: Design, source: str) -> list[Finding]:
         if not wired:
             continue  # no pin-level connectivity in this design
         if len(wired) == 1:
+            if _is_single_pin_part(ref):
+                continue  # H*/MH*/TP*/FID*/#PWR01: one pin is their normal state
             findings.append(
                 Finding(
                     rule="UNCONNECTED_PIN",
@@ -266,18 +454,20 @@ def _unconnected_pin(design: Design, source: str) -> list[Finding]:
 def _missing_value(design: Design, source: str) -> list[Finding]:
     """``MISSING_VALUE``: R/C/D/L/Q/U component without a value.
 
-    Heuristic (v1): passives/actives (refs starting with R, C, D, L, Q, U)
-    always need a value to be meaningful and purchaseable. Documented
-    exceptions: connectors and mechanical/power symbols are not flagged —
-    in particular the KiCad power-symbol pattern (pin 1 on a power net
-    ``GND``/``VCC``) is skipped even when its ref starts with one of the
-    prefixes above.
+    Heuristic (v1): passives/actives (refs whose kind starts with R, C,
+    D, L, Q, U — resolved through :func:`_ref_class` so namespaced refs
+    like ``motherboard/R18`` work) always need a value to be meaningful
+    and purchaseable. Documented exceptions: connectors and
+    mechanical/power symbols are not flagged — in particular the KiCad
+    power-symbol pattern (pin 1 on a power net ``GND``/``VCC``) is
+    skipped even when its ref starts with one of the prefixes above.
     """
     findings: list[Finding] = []
     for ref, component in sorted(design.components.items()):
         if component.value is not None:
             continue
-        if not ref.startswith(VALUE_REQUIRED_PREFIXES):
+        kind = _ref_class(ref)
+        if kind is None or kind not in VALUE_REQUIRED_PREFIXES:
             continue  # connector / mechanical symbol: value often absent
         if component.pins.get("1") in POWER_NET_NAMES:
             continue  # power-symbol pattern (pin 1 on a power rail)
@@ -285,7 +475,7 @@ def _missing_value(design: Design, source: str) -> list[Finding]:
             Finding(
                 rule="MISSING_VALUE",
                 severity="warning",
-                message=f"component {ref} has no value (a {ref[0]}-class device needs one)",
+                message=f"component {ref} has no value (a {kind}-class device needs one)",
                 evidence=[ref],
                 position=source,
             )
@@ -314,10 +504,11 @@ def _no_driver(design: Design, source: str) -> list[Finding]:
     """``NO_DRIVER``: net made only of passives with no driver anywhere.
 
     Consultative (info) rule: a net whose connections are exclusively
-    passive parts (refs starting with R/C/L/D), with no driver (ref
-    starting with U/J/Q) and not named like a power net (5V/VCC/GND),
-    cannot source the energy it would need to do anything useful. Unknown
-    reference prefixes (e.g. test points) silence the rule.
+    passive parts (reference classes R/C/L/D, resolved through
+    :func:`_ref_class` so namespaced refs work), with no driver (classes
+    U/J/Q) and not named like a power net (5V/VCC/GND), cannot source
+    the energy it would need to do anything useful. Unknown reference
+    prefixes (e.g. test points, power symbols) silence the rule.
     """
     findings: list[Finding] = []
     for net in sorted(design.nets.values(), key=lambda item: item.name):
@@ -328,9 +519,10 @@ def _no_driver(design: Design, source: str) -> list[Finding]:
         refs = sorted({ref for ref, _ in net.connections})
         if not refs:
             continue
-        if all(ref[0] in PASSIVE_PREFIXES for ref in refs) and not any(
-            ref[0] in DRIVER_PREFIXES for ref in refs
-        ):
+        classes = [_ref_class(ref) for ref in refs]
+        passive_only = all(cls is not None and cls in PASSIVE_PREFIXES for cls in classes)
+        has_driver = any(cls is not None and cls in DRIVER_PREFIXES for cls in classes)
+        if passive_only and not has_driver:
             findings.append(
                 Finding(
                     rule="NO_DRIVER",
@@ -350,12 +542,13 @@ def _led_no_limiter(design: Design, source: str) -> list[Finding]:
     """``LED_NO_LIMITER``: LED without a series resistor on any of its nets.
 
     The star rule of the auditor: an LED whose value mentions ``"LED"``
-    and whose nets contain no pin of a series resistor (ref starting with
-    ``"R"``) has unbounded forward current — the part is destroyed in
-    normal operation. Detection is purely structural: collect the nets of
-    the LED's wired pins and look for a resistor pin among their
-    connections. LEDs without pin-level connectivity (schematic-derived
-    designs) are skipped.
+    and whose nets contain no pin of a series resistor (reference class
+    ``"R"``, resolved through :func:`_ref_class` so namespaced refs like
+    ``motherboard/R3`` count) has unbounded forward current — the part is
+    destroyed in normal operation. Detection is purely structural:
+    collect the nets of the LED's wired pins and look for a resistor pin
+    among their connections. LEDs without pin-level connectivity
+    (schematic-derived designs) are skipped.
     """
     findings: list[Finding] = []
     for ref, component in sorted(design.components.items()):
@@ -365,7 +558,7 @@ def _led_no_limiter(design: Design, source: str) -> list[Finding]:
         if not led_nets:
             continue  # pin connectivity unresolved in this design
         has_limiter = any(
-            other_ref.startswith("R")
+            _ref_class(other_ref) == "R"
             for net_name in led_nets
             if (net := design.nets.get(net_name)) is not None
             for other_ref, _ in net.connections
@@ -390,34 +583,40 @@ def _led_no_limiter(design: Design, source: str) -> list[Finding]:
 
 
 def _e_series_compliance(design: Design, source: str) -> list[Finding]:
-    """``E_SERIES_COMPLIANCE``: R/C value is not a preferred E12/E24 number.
+    """``E_SERIES_COMPLIANCE``: R/C value is not a preferred E6/E12/E24/E96 number.
 
     Preferred numbers (IEC 60063) are the values the component industry
     actually manufactures and stocks; a hand-picked value such as ``333``
     (instead of the standard ``330``) means longer lead times, higher cost
     and often a substituted part. The check normalises the parsed value to
-    its mantissa (1.0 <= m < 10) and compares it against the E12/E24 rows
-    with a 0.5 % tolerance (:func:`_is_e_series`): exact preferred numbers
-    and decade multiples pass, non-standard mantissas fail. Values that
-    cannot be parsed (empty, EIA code, exotic notation) are skipped —
+    its mantissa (1.0 <= m < 10) and compares it against the E6/E12/E24/E96
+    rows with a 0.25 % tolerance (:func:`_is_e_series`): exact preferred
+    numbers and decade multiples pass, non-standard mantissas fail. Values
+    that cannot be parsed (empty, EIA code, exotic notation) are skipped —
     other rules own missing values.
 
-    Technical justification: E12 (10 %) covers general-purpose parts and
-    E24 (5 %) the fine-tolerance ones; both share the same mantissa set,
-    so one membership test serves resistors and capacitors alike.
+    Technical justification: E12 (10 %) covers general-purpose parts, E24
+    (5 %) the fine-tolerance ones and E96 (1 %) precision parts such as
+    sense resistors and precision dividers; a value is accepted when it
+    belongs to any of the four series. The 0.25 % tolerance keeps genuine
+    E96 members (e.g. ``4.99k``, ``24.9k``, ``1.15nF``) while still
+    flagging near-misses like ``333`` (0.30 % off the E96 step 3.32).
+    The reference class is resolved through :func:`_ref_class`, so
+    namespaced refs (``motherboard/R18``) are checked like plain ones.
     """
     findings: list[Finding] = []
     for ref, component in sorted(design.components.items()):
-        if not ref.startswith(("R", "C")):
+        kind = _ref_class(ref)
+        if kind not in ("R", "C"):
             continue
         if component.value is None:
             continue  # MISSING_VALUE already reports the absent value
-        if ref.startswith("R"):
+        if kind == "R":
             parsed = _parse_resistance(component.value)
-            kind = "resistor"
+            kind_label = "resistor"
         else:
             parsed = _parse_capacitance(component.value)
-            kind = "capacitor"
+            kind_label = "capacitor"
         if parsed is None or parsed <= 0:
             continue  # unparseable (e.g. bare EIA code): cannot verify
         if _is_e_series(parsed):
@@ -427,8 +626,8 @@ def _e_series_compliance(design: Design, source: str) -> list[Finding]:
                 rule="E_SERIES_COMPLIANCE",
                 severity="warning",
                 message=(
-                    f"{kind} {ref} value '{component.value}' is not a preferred "
-                    f"E12/E24 number (mantissa {_mantissa(parsed):.4g}); pick a "
+                    f"{kind_label} {ref} value '{component.value}' is not a preferred "
+                    f"E6/E12/E24/E96 number (mantissa {_mantissa(parsed):.4g}); pick a "
                     "standard value (e.g. 330 instead of 333) for availability "
                     "and cost"
                 ),
@@ -470,7 +669,7 @@ def _led_series_resistor(design: Design, source: str) -> list[Finding]:
                 for net_name in led_nets
                 if (net := design.nets.get(net_name)) is not None
                 for other_ref, _ in net.connections
-                if other_ref != ref and other_ref.startswith("R")
+                if other_ref != ref and _ref_class(other_ref) == "R"
             }
         )
         if not series_resistors:
@@ -529,7 +728,7 @@ def _cap_derating(design: Design, source: str) -> list[Finding]:
     """
     findings: list[Finding] = []
     for ref, component in sorted(design.components.items()):
-        if not ref.startswith("C") or component.value is None:
+        if _ref_class(ref) != "C" or component.value is None:
             continue
         if not _is_electrolytic(component.value, component.footprint):
             continue
@@ -641,13 +840,14 @@ def _mantissa(value: float) -> float:
     return value / 10.0 ** math.floor(math.log10(value))
 
 
-def _is_e_series(value: float, series: tuple[str, ...] = ("E6", "E12", "E24")) -> bool:
+def _is_e_series(value: float, series: tuple[str, ...] = ("E6", "E12", "E24", "E96")) -> bool:
     """True if ``value`` is a preferred number of any requested E series.
 
     The value is normalised to its mantissa and compared against the union
     of the requested series' rows (:data:`E_SERIES_ROWS`) with a relative
-    tolerance of :data:`E_SERIES_MATCH_TOLERANCE`. Non-positive, boolean
-    and non-finite inputs are never preferred numbers.
+    tolerance of :data:`E_SERIES_MATCH_TOLERANCE` (0.25 %: exact E96
+    members pass, 0.3 %+ near-misses fail). Non-positive, boolean and
+    non-finite inputs are never preferred numbers.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False

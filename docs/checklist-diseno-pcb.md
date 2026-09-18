@@ -280,7 +280,7 @@ deterministas en `tests/fixtures/`, casos de test en `tests/test_audit.py`):
 
 | Regla checklist | Regla del auditor | Severidad | Qué comprueba desde el netlist |
 |-----------------|-------------------|-----------|--------------------------------|
-| R6 — serie preferida | `E_SERIES_COMPLIANCE` | warning | la mantisa del valor R/C pertenece a E12/E24 (tolerancia 0.5 %): `333` avisa, `330` no |
+| R6 — serie preferida | `E_SERIES_COMPLIANCE` | warning | la mantisa del valor R/C pertenece a E6/E12/E24/E96 (tolerancia 0.25 %): `333` avisa, `330` no |
 | LED1 — limitador | `LED_SERIES_RESISTOR` | warning | R serie del LED = 0 Ω (cortocircuito) o < 22 Ω (no limita a 3.3-5 V); ≥ 22 Ω pasa |
 | C1 — tensión | `CAP_DERATING` | info | electrolítico con tensión en el valor (`10uF 50V`) y rail numérico (`5V`/`3V3`) con Vnom < 1.5 × Vrail |
 

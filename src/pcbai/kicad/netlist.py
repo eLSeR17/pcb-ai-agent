@@ -146,6 +146,14 @@ def parse_netlist(source: str | Path) -> Design:
     :class:`NetlistError`. Pin-level connectivity is taken from the nets
     section (the netlist is the source of truth).
 
+    Unannotated reference placeholders (``R?``, ``U?`` — Eeschema marks
+    components placed but never annotated with a trailing ``?``) are
+    **omitted** from the design: several parts share the same placeholder
+    ref, so ``(ref, pin)`` pairs are not unique and the identity is not
+    stable enough to anchor evidence. Their net nodes are filtered too;
+    a net left with zero real connections is kept (empty) so its name
+    still exists, but no rule can produce a finding for it.
+
     ``source`` is a file path (``str``/``Path``) or raw S-expression text;
     see :func:`_read_source` for the exact rule. Raises
     :class:`NetlistError` on structural problems and
@@ -241,6 +249,18 @@ def _optional_text(node: list | None) -> str | None:
     return text or None
 
 
+def _is_unannotated_ref(ref: str) -> bool:
+    """True for KiCad's unannotated reference placeholder (``R?``).
+
+    Eeschema writes a trailing ``?`` in the reference of components that
+    were placed but never annotated (``R?``, ``U?``). Multiple instances
+    share the same placeholder ref, so ``(ref, pin)`` pairs are not
+    unique: the parts carry no stable identity and are omitted from the
+    :class:`Design` (see :func:`parse_netlist`).
+    """
+    return ref.endswith("?")
+
+
 def _build_from_netlist(tree: list) -> Design:
     """Assemble a :class:`Design` from a parsed ``(export ...)`` tree."""
     if not tree or tree[0] != "export":
@@ -275,6 +295,8 @@ def _add_component(components: dict[str, Component], node: list) -> None:
     if ref_node is None or len(ref_node) < 2:
         raise NetlistError(f"component without a reference: {node!r}")
     ref = _atom_text(ref_node[1])
+    if _is_unannotated_ref(ref):
+        return  # placeholder R?: no stable identity (see parse_netlist)
     if ref in components:
         raise NetlistError(f"duplicate component reference {ref!r}")
     value = _optional_text(_first_child_named(node, "value"))
@@ -296,7 +318,10 @@ def _add_net(nets: dict[str, Net], node: list) -> None:
         pin_node = _first_child_named(node_item, "pin")
         if ref_node is None or len(ref_node) < 2 or pin_node is None or len(pin_node) < 2:
             raise NetlistError(f"malformed (node ...) entry: {node_item!r}")
-        connection = (_atom_text(ref_node[1]), _atom_text(pin_node[1]))
+        ref = _atom_text(ref_node[1])
+        if _is_unannotated_ref(ref):
+            continue  # placeholder R?: its pins carry no stable identity
+        connection = (ref, _atom_text(pin_node[1]))
         if connection not in connections:
             connections.append(connection)
     nets[name] = Net(name=name, connections=connections)
