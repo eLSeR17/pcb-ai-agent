@@ -14,6 +14,7 @@ Three modules:
 | `pcbai.firmware.templates` | The catalog of 8 templates + strict parameter contracts |
 | `pcbai.firmware.generator` | `generate_firmware(spec)` → grounded `FirmwareArtifact` |
 | `pcbai.firmware.validator` | Static, non-compiling checks over an artifact |
+| `pcbai.firmware.compile_check` | Real-compiler syntax check (`gcc`/`g++`) over artifacts against bundled HAL/Arduino stubs |
 
 ## Template catalog
 
@@ -128,6 +129,50 @@ class ValidationReport:
 strings but does not expand preprocessor macros or understand C++
 templates, and any `HAL_*` mention inside a comment is treated as a call
 reference. The validator is a best-effort static layer, not a C parser.
+
+## Compile-check (real compiler)
+
+`compile_check(artifacts)` is the opt-in counterpart to the static
+validator: it feeds artifacts to the **system compilers** and reports
+whether they parse. It is deliberately separate — the validator is a
+dependency-free deterministic gate that runs anywhere, while the
+compile-check needs a toolchain:
+
+- STM32 HAL artifacts compile as **C11** with `gcc -std=c11 -fsyntax-only
+  -Wall -Werror`; Arduino sketches as **C++11** with `g++ -std=c++11
+  -fsyntax-only -Wall -Werror -include Arduino.h` (the `-include` mirrors
+  how the Arduino toolchain injects its core).
+- No vendor SDK is needed: the check compiles against the bundled,
+  100 % own stubs in `src/pcbai/firmware/stubs/` (`stm32f4xx_hal.h`,
+  `stm32f1xx_hal.h` bridge, `main.h`, `Arduino.h`, `Wire.h`). They cover
+  exactly the HAL/Arduino surface the 8 templates use — types, instance
+  macros, init structs and functions — so artifacts get a genuine parser
+  pass without vendoring the real STM32 HAL or Arduino core.
+- Artifacts are written to a throwaway temporary directory (one per
+  artifact), compiled, and the directory is removed before returning. The
+  check is deterministic and never modifies the artifact.
+- A missing compiler short-circuits into a `CompileReport.error` message
+  instead of a partial result set; every artifact is compiled even when an
+  earlier one failed, so one run lists all breakages.
+
+```python
+from pcbai.firmware import FirmwareSpec, generate_firmware, compile_check
+
+artifact = generate_firmware(
+    FirmwareSpec(
+        target="stm32-hal",
+        template="stm32_gpio_output",
+        params={"port": "GPIOA", "pin": "GPIO_PIN_5", "label": "LED"},
+    )
+)
+report = compile_check([artifact])
+assert report.ok, report.results[0].stderr
+```
+
+What this is **not**: a syntax check with minimal stubs is not a link, not
+a flash-ready build, and does not validate against the vendor toolchain's
+headers or libraries. Human review (`requires_human_review=True`) and a
+real build remain mandatory before flashing.
 
 ## Usage
 

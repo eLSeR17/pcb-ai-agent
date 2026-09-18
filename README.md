@@ -106,7 +106,7 @@ See [docs/EVALS.md](docs/EVALS.md) for dataset contracts and scoring formulas.
 ## Stack
 
 - **Python 3.11+** — stdlib-only runtime (zero external dependencies)
-- **pytest** — test suite (324 tests, 1 opt-in LLM integration)
+- **pytest** — test suite (493 tests, 1 opt-in LLM integration)
 - **ruff** — linting and formatting
 - **mcp** *(optional)* — MCP SDK for the stdio tool server
 - **Ollama** *(optional)* — local LLM for the ReAct agent (`qwen2.5-coder:7b`)
@@ -166,6 +166,10 @@ See [docs/MCP.md](docs/MCP.md) for the full tool reference.
 - **Static validator**: firmware validation checks structure (braces, includes,
   pin schema) but does not compile.  Every artifact carries
   `requires_human_review=True`.
+- **Compile-check is opt-in syntax checking**: `pcbai.firmware.compile_check`
+  feeds artifacts to the system `gcc`/`g++` (`-fsyntax-only`, `-Wall
+  -Werror`) against bundled 100 %-own HAL/Arduino stubs — a real-parser
+  sanity pass, not a link and not a flash-ready vendor build.
 - **Grounding is heuristic**: ref/number extraction uses regex + denylist;
   unusual technical prose may over- or under-match.
 

@@ -48,6 +48,12 @@ jobs:
       - name: Run tests
         run: python3 -m pytest tests/ -q --tb=short -m "not llm"
 
+      # Real-compiler firmware compile check (gcc/g++ are preinstalled on
+      # ubuntu-latest). The skipped tests are the pure/mocked ones; -k real
+      # selects the opt-in tests that actually invoke the compilers.
+      - name: Compile firmware artifacts (real gcc/g++)
+        run: python3 -m pytest tests/test_compile_check.py -q -k real
+
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 10

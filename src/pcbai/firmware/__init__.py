@@ -14,8 +14,18 @@ Public API:
   ``design_path`` is given. Always ``requires_human_review=True``.
 - :func:`validate_firmware` — deterministic, non-compiling static checks
   over a generated artifact.
+- :func:`compile_check` — real-compiler syntax check (``gcc``/``g++``)
+  over generated artifacts against the bundled 100 %-own HAL/Arduino
+  stubs; opt-in, outside the static validator.
 """
 
+from pcbai.firmware.compile_check import (
+    CompileReport,
+    CompileResult,
+    compile_check,
+    resolve_stub_dir,
+    write_stub_tree,
+)
 from pcbai.firmware.generator import (
     FirmwareArtifact,
     FirmwareSpec,
@@ -48,6 +58,8 @@ __all__ = [
     "KNOWN_HAL_MACROS",
     "TARGETS",
     "TEMPLATES",
+    "CompileReport",
+    "CompileResult",
     "FirmwareArtifact",
     "FirmwareSpec",
     "GroundingError",
@@ -58,8 +70,11 @@ __all__ = [
     "UnknownTemplateError",
     "ValidationIssue",
     "ValidationReport",
+    "compile_check",
     "generate_firmware",
     "get_template",
     "list_templates",
+    "resolve_stub_dir",
     "validate_firmware",
+    "write_stub_tree",
 ]

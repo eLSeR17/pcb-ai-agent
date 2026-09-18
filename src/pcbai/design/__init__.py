@@ -13,12 +13,16 @@ Public API:
 - :func:`pcbai.design.audit_design` — evidence-based audit rules over a
   :class:`pcbai.kicad.netlist.Design`; every finding cites the concrete
   refs/nets that triggered it.
+- :func:`pcbai.design.cross_check` — netlist <-> schematic consistency
+  check: component identity (ref/value/footprint) drift between the
+  exported board and the drawing, with the same evidence contract.
 - :func:`pcbai.design.generate_bom` / :func:`pcbai.design.bom_table` —
   deterministic bill of materials.
 """
 
 from pcbai.design.audit import AuditReport, Finding, audit_design
 from pcbai.design.bom import BOM_KEYS, bom_table, generate_bom
+from pcbai.design.consistency import ConsistencyReport, cross_check
 from pcbai.design.sizing import (
     DIODE_DISSIPATION_LIMIT_W,
     E12_SERIES,
@@ -35,12 +39,14 @@ from pcbai.design.sizing import (
 __all__ = [
     "AuditReport",
     "BOM_KEYS",
+    "ConsistencyReport",
     "DIODE_DISSIPATION_LIMIT_W",
     "E12_SERIES",
     "Finding",
     "PULL_UP_BAND_OHMS",
     "audit_design",
     "bom_table",
+    "cross_check",
     "decoupling_capacitor",
     "e12_round",
     "generate_bom",

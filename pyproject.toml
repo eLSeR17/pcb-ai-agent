@@ -65,3 +65,8 @@ ignore = [
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+
+[tool.setuptools.package-data]
+# The compile-check (pcbai.firmware.compile_check) ships minimal HAL/Arduino
+# stub headers; without this they would be dropped from built wheels.
+"pcbai.firmware.stubs" = ["*.h"]
