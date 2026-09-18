@@ -19,13 +19,17 @@ when the output drives real hardware.
 pcb-ai-agent is a two-layer local agent:
 
 - **Layer 1 (read)**: parses KiCad netlists and schematics, runs evidence-based
-  audit rules, computes component sizing with E12 preferred values, and generates
-  a bill of materials.  Every number comes from code — never from an LLM.
+  audit rules, cross-checks netlist against schematic so parts cannot silently
+  diverge (missing on one side, value or footprint mismatch, unannotated refs),
+  computes component sizing with E12 preferred values, and generates a bill of
+  materials.  Every number comes from code — never from an LLM.
 
 - **Layer 2 (write)**: a local ReAct agent (Ollama qwen2.5-coder:7b) selects
   tools and parameters; the code executes them.  A deterministic grounding gate
   validates every answer before it reaches the user.  Firmware generation uses
-  8 fixed templates with a static validator and an mandatory human review gate.
+  8 fixed templates, a static validator and a real compile-check pass (system
+  gcc/g++, -fsyntax-only -Wall -Werror, own HAL/Arduino stubs) before the
+  mandatory human review gate.
 
 ## Demo
 
@@ -163,13 +167,12 @@ See [docs/MCP.md](docs/MCP.md) for the full tool reference.
   (symbols, wires, labels, junctions) and cannot resolve pin-level
   connectivity without the KiCad symbol library.  Use the exported netlist
   for full audit coverage.
-- **Static validator**: firmware validation checks structure (braces, includes,
-  pin schema) but does not compile.  Every artifact carries
-  `requires_human_review=True`.
-- **Compile-check is opt-in syntax checking**: `pcbai.firmware.compile_check`
-  feeds artifacts to the system `gcc`/`g++` (`-fsyntax-only`, `-Wall
-  -Werror`) against bundled 100 %-own HAL/Arduino stubs — a real-parser
-  sanity pass, not a link and not a flash-ready vendor build.
+- **Static validator + compile-check**: firmware goes through two gates —
+  structural checks (braces, includes, pin schema) and a real syntax pass that
+  feeds artifacts to the system `gcc`/`g++` (`-fsyntax-only`, `-Wall -Werror`)
+  against bundled 100 %-own HAL/Arduino stubs.  It is a real-parser sanity
+  pass, not a link and not a flash-ready vendor build — every artifact still
+  carries `requires_human_review=True`.
 - **Grounding is heuristic**: ref/number extraction uses regex + denylist;
   unusual technical prose may over- or under-match.
 
